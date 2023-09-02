@@ -4,7 +4,7 @@ import { max, range, sum } from 'd3-array';
 import merge from 'lodash.merge';
 import Zoom from './interaction';
 import { ReglRenderer } from './regl_rendering';
-import { Dataset, QuadtileSet } from './Dataset';
+import { Dataset } from './Dataset';
 import type { StructRowProxy } from 'apache-arrow';
 import type { FeatureCollection } from 'geojson';
 import { LabelMaker } from './label_rendering';
@@ -13,7 +13,8 @@ import { ArrowTile, QuadTile, Rectangle, Tile } from './tile';
 import type { ConcreteAesthetic } from './StatefulAesthetic';
 import { isURLLabels, isLabelset } from './typing';
 import { DataSelection } from './selection';
-import type { IdSelectParams } from './selection';
+import type { BooleanColumnParams, FunctionSelectParams, IdSelectParams } from './selection';
+import type * as DS from './shared.d'
 // DOM elements that deepscatter uses.
 
 const base_elements = [
@@ -44,17 +45,18 @@ export default class Scatterplot<T extends Tile> {
   public _renderer?: ReglRenderer<T>;
   public width: number;
   public height: number;
-  public _root: Dataset<T>;
+  public _root?: Dataset<T>;
   public elements?: Selection<SVGElement, any, any, any>[];
   public secondary_renderers: Record<string, Renderer<T>> = {};
-  public selection_history: SelectionRecord[] = [];
+  public selection_history: DS.SelectionRecord<T>[] = [];
+  public tileProxy?: DS.TileProxy;
   div: Selection<any, any, any, any>;
   bound: boolean;
   //  d3 : Object;
-  private _zoom: Zoom;
+  public _zoom: Zoom<T>;
   // The queue of draw calls are a chain of promises.
   private plot_queue: Promise<void> = Promise.resolve();
-  public prefs: CompletePrefs;
+  public prefs: DS.CompletePrefs;
   // Whether the scatterplot has finished loading.
   ready: Promise<void>;
   public click_handler: ClickFunction;
@@ -62,7 +64,7 @@ export default class Scatterplot<T extends Tile> {
   public tooltip_handler: TooltipHTML;
   public label_click_handler: LabelClick;
   // In order to preserve JSON serializable nature of prefs, the consumer directly sets this
-  public on_zoom?: onZoomCallback;
+  public on_zoom?: DS.onZoomCallback;
   private mark_ready: () => void = function () {
     /*pass*/
   };
@@ -71,7 +73,7 @@ export default class Scatterplot<T extends Tile> {
    * @param width The width of the scatterplot (in pixels)
    * @param height The height of the scatterplot (in pixels)
    */
-  constructor(selector: string, width: number, height: number) {
+  constructor(selector: string, width: number, height: number, options: DS.ScatterplotOptions = {}) {
     this.bound = false;
     if (selector !== undefined) {
       this.bind(selector, width, height);
@@ -85,7 +87,10 @@ export default class Scatterplot<T extends Tile> {
     this.click_handler = new ClickFunction(this);
     this.tooltip_handler = new TooltipHTML(this);
     this.label_click_handler = new LabelClick(this);
-    this.prefs = { ...default_API_call };
+    if (options.tileProxy) {
+      this.tileProxy = options.tileProxy;
+    }
+    this.prefs = { ...default_API_call } as DS.CompletePrefs;
   }
 
   /**
@@ -142,11 +147,36 @@ export default class Scatterplot<T extends Tile> {
     this.bound = true;
   }
 
-  async select_data(params: IdSelectParams) {
-    const selection = new DataSelection(this, params);
-    //await selection.apply_to_foreground({})
+  /**
+   * Creates a new selection from a set of parameters, and immediately applies it to the plot.
+   * @param params A set of parameters defining a selection. 
+  */
+  async select_and_plot(params: IdSelectParams | BooleanColumnParams | FunctionSelectParams, duration=this.prefs.duration) {
+    const selection = await this.select_data(params)
+    await selection.ready
+    await this.plotAPI({ 
+      duration,
+      encoding: {
+        foreground: {
+          field: selection.name,
+          op: 'eq',
+          a: 1
+        }
+      }
+     })
+  }
+  /**
+   * 
+   * @param params A set of parameters for selecting data based on ids, a boolean column, or a function.
+   * @returns A DataSelection object that can be used to extend the selection.
+   * 
+   * See `select_and_plot` for a method that will select data and plot it.
+   */
+  async select_data(params: IdSelectParams | BooleanColumnParams | FunctionSelectParams) {
+    const selection = new DataSelection<T>(this, params);
+    await selection.ready;
     this.selection_history.push({
-      ref: selection,
+      selection,
       name: selection.name,
       flushed: false,
     });
@@ -164,12 +194,11 @@ export default class Scatterplot<T extends Tile> {
     codes:
       | string[]
       | bigint[]
-      | Record<string, number>
-      | Record<bigint, number>,
+      | Record<string, number>,
     key_field: string
   ) {
     const true_codes: Record<string, number> = Array.isArray(codes)
-      ? Object.fromEntries(codes.map((next) => [next, 1]))
+      ? Object.fromEntries(codes.map((next : string | bigint) => [next, 1]))
       : codes;
     this._root.add_label_identifiers(true_codes, name, key_field);
   }
@@ -179,7 +208,7 @@ export default class Scatterplot<T extends Tile> {
     name: string,
     label_key: string,
     size_key: string | undefined,
-    options: LabelOptions
+    options: DS.LabelOptions
   ): Promise<void> {
     await this.ready;
     await this._root.promise;
@@ -219,7 +248,7 @@ export default class Scatterplot<T extends Tile> {
     name: string,
     label_key: string,
     size_key: string | undefined,
-    options: LabelOptions = {}
+    options: DS.LabelOptions = {}
   ) {
     const labels = new LabelMaker(this, name, options);
     labels.update(features, label_key, size_key);
@@ -237,10 +266,10 @@ export default class Scatterplot<T extends Tile> {
     return this._root;
   }
 
-  add_api_label(labelset: Labelset) {
+  add_api_label(labelset: DS.Labelset) {
     const geojson: FeatureCollection = {
       type: 'FeatureCollection',
-      features: labelset.labels.map((label: Label) => {
+      features: labelset.labels.map((label: DS.Label) => {
         return {
           type: 'Feature',
           geometry: {
@@ -466,7 +495,7 @@ export default class Scatterplot<T extends Tile> {
     this.div?.node().parentElement.replaceChildren();
   }
 
-  update_prefs(prefs: APICall) {
+  update_prefs(prefs: DS.APICall) {
     // Stash the previous values for interpolation.
 
     if (this.prefs.encoding && prefs.encoding) {
@@ -554,7 +583,7 @@ export default class Scatterplot<T extends Tile> {
    * Plots a set of prefs, and returns a promise that resolves
    * upon the completion of the plot (not including any time for transitions).
    */
-  async plotAPI(prefs: APICall): Promise<void> {
+  async plotAPI(prefs: DS.APICall): Promise<void> {
     if (prefs === undefined) {
       return;
     }
@@ -582,7 +611,7 @@ export default class Scatterplot<T extends Tile> {
    * @returns A promise that resolves immediately if there's no work to do,
    * or after the delay if there is.
    */
-  async start_transformations(prefs: APICall, delay = 110): Promise<void> {
+  async start_transformations(prefs: DS.APICall, delay = 110): Promise<void> {
     // If there's not a transition time, things might get weird and a flicker
     // is probably OK. Using the *current* transition time means that the start
     // of a set of duration-0 calls (like, e.g., dragging a time slider) will
@@ -656,7 +685,7 @@ export default class Scatterplot<T extends Tile> {
    *
    * @param prefs The preferences
    */
-  private async unsafe_plotAPI(prefs: APICall): Promise<void> {
+  private async unsafe_plotAPI(prefs: DS.APICall): Promise<void> {
     if (prefs === null) {
       return;
     }
@@ -900,9 +929,9 @@ class LabelClick extends SettableFunction<void, GeoJsonProperties> {
   default(
     feature: GeoJsonProperties,
     plot = undefined,
-    labelset: LabelMaker = undefined
+    labelset: LabelMaker | undefined = undefined
   ) {
-    let filter: LambdaChannel | null | OpChannel;
+    let filter: DS.LambdaChannel | null | DS.OpChannel;
     if (feature === null) {
       return;
     }

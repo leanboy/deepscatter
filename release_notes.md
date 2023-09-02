@@ -1,5 +1,18 @@
-# 2.12.1
+# 2.13.3
 
+Add `select_and_plot` shortcut on `Deepscatter` object to plot a selection immediately
+on creation.
+ 
+# 2.13.2
+
+- Publish type definitions. at dist/deepscatter.d.ts
+
+# 2.13.0
+- Introduce new 'selection' fundamental; selections allow
+  managing a variety of common operations on sets of points,
+  including iteration, creation of a column from a list of ids,
+  and (WIP) unioning, intersection, and other operations on 
+  arrow columns and bitmasks.
 - More comprehensive type annotations
 - Remove random jitter on point size above 5 pixels.
 # 2.12.0

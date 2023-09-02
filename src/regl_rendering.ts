@@ -10,12 +10,12 @@ import vertex_shader from './glsl/general.vert';
 import frag_shader from './glsl/general.frag';
 import { AestheticSet } from './AestheticSet';
 import { rgb } from 'd3-color';
-
+import type * as DS from './shared'
 import type { Tile } from './tile';
 import REGL from 'regl';
 import { Dataset } from './Dataset';
 import Scatterplot from './deepscatter';
-import { StructRowProxy } from 'apache-arrow';
+import { Bool, Data, Dictionary, Float, Int, StructRowProxy, Timestamp, Utf8, Vector } from 'apache-arrow';
 
 // eslint-disable-next-line import/prefer-default-export
 export class ReglRenderer<T extends Tile> extends Renderer<T> {
@@ -25,8 +25,8 @@ export class ReglRenderer<T extends Tile> extends Renderer<T> {
   private _buffers: MultipurposeBufferSet;
   public _initializations: Promise<void>[];
   public tileSet: Dataset<T>;
-  public zoom?: Zoom;
-  public _zoom?: Zoom;
+  public zoom?: Zoom<T>;
+  public _zoom?: Zoom<T>;
   public _start: number;
   public most_recent_restart?: number;
   public _default_webgl_scale?: number[];
@@ -80,7 +80,7 @@ export class ReglRenderer<T extends Tile> extends Renderer<T> {
         ];
       }),
     ];
-    this.initialize();
+    void this.initialize();
     this._buffers = new MultipurposeBufferSet(this.regl, this.buffer_size);
   }
 
@@ -141,17 +141,17 @@ export class ReglRenderer<T extends Tile> extends Renderer<T> {
       // Copy the aesthetic as a string.
       aes: { encoding: this.aes.encoding },
       colors_as_grid: 0,
-      corners: this.zoom!.current_corners(),
+      corners: this.zoom.current_corners(),
       zoom_balance: prefs.zoom_balance,
       transform,
       max_ix: this.max_ix,
       point_size: this.point_size,
       alpha: this.optimal_alpha,
-      time: Date.now() - this.zoom!._start,
+      time: Date.now() - this.zoom._start,
       update_time: Date.now() - this.most_recent_restart,
       relative_time: (Date.now() - this.most_recent_restart) / prefs.duration,
       string_index: 0,
-      prefs: JSON.parse(JSON.stringify(prefs)) as APICall,
+      prefs: JSON.parse(JSON.stringify(prefs)) as DS.APICall,
       color_type: undefined,
       start_time: this.most_recent_restart,
       webgl_scale: this._webgl_scale_history[0],
@@ -167,7 +167,7 @@ export class ReglRenderer<T extends Tile> extends Renderer<T> {
         [0, transform.k, transform.y],
         [0, 0, 1],
       ].flat(),
-    };
+    } as const;
 
     // Clone.
     return JSON.parse(JSON.stringify(props));
@@ -224,6 +224,9 @@ export class ReglRenderer<T extends Tile> extends Renderer<T> {
     this._renderer(prop_list);
   }
 
+  /**
+   * Actions that run on a single animation tick.
+   */
   tick() {
     const { prefs } = this;
     const { regl, tileSet } = this;
@@ -1013,7 +1016,7 @@ export class ReglRenderer<T extends Tile> extends Renderer<T> {
 
     type time = 'current' | 'last';
     type BufferSummary = {
-      aesthetic: keyof Encoding;
+      aesthetic: keyof DS.Encoding;
       time: time;
       field: string;
     };
@@ -1118,7 +1121,7 @@ export class TileBufferManager<T extends Tile> {
   public tile: T;
   public regl: Regl;
   public renderer: ReglRenderer<T>;
-  public regl_elements: Map<string, BufferLocation | null>;
+  public regl_elements: Map<string, DS.BufferLocation | null>;
 
   constructor(regl: Regl, tile: T, renderer: ReglRenderer<T>) {
     this.tile = tile;
@@ -1150,7 +1153,7 @@ export class TileBufferManager<T extends Tile> {
 
     // We don't allocate buffers for dimensions until they're needed.
     // This code checks what buffers the current plot call is expecting.
-    const needed_dimensions: Set<Dimension> = new Set();
+    const needed_dimensions: Set<DS.Dimension> = new Set();
     for (const [k, v] of renderer.aes) {
       for (const aesthetic of v.states) {
         if (aesthetic.field) {
@@ -1228,15 +1231,16 @@ export class TileBufferManager<T extends Tile> {
       throw new Error('Tile table not present.');
     }
 
-    let column = tile.record_batch.getChild(key);
+    type ColumnType = Vector<Dictionary<Utf8> | Float | Bool | Int | Timestamp>
+    let column = tile.record_batch.getChild(key) as null | ColumnType;
 
     if (!column) {
-      const transformation = await tile.dataset.transformations[key];
+      const transformation = tile.dataset.transformations[key];
       if (transformation !== undefined) {
         // Sometimes the transformation for creating the column may be defined but not yet applied.
         // If so, apply it right away.
         await tile.apply_transformation(key);
-        column = tile.record_batch.getChild(key);
+        column = tile.record_batch.getChild(key) as ColumnType;
         if (!column) {
           throw new Error(`${key} was not created.`);
         }
@@ -1249,15 +1253,34 @@ export class TileBufferManager<T extends Tile> {
         );
       }
     }
+
+    if (column.data.length !== 1) {
+      throw new Error(
+        `Column ${key} has ${column.data.length} buffers, not 1.`
+      );
+    }
+
+    if (!column.type || !(column.type.typeId)) {
+      throw new Error(`Column ${key} has no type.`);
+    }
     // Anything that isn't a single-precision float must be coerced to one.
-    if (column.type.typeId !== 3) {
+    if (!column.type || column.type.typeId !== 3) {
       const buffer = new Float32Array(tile.record_batch.numRows);
       const source_buffer = column.data[0];
-      if (column.type.dictionary) {
+
+      
+      if (column.type['dictionary']) {
         // We set the dictionary values down by 2047 so that we can use
         // even half-precision floats for direct indexing.
         for (let i = 0; i < tile.record_batch.numRows; i++) {
-          buffer[i] = source_buffer.values[i] - 2047;
+          buffer[i] = (source_buffer as Data<Dictionary<Utf8>>).values[i] - 2047;
+        }
+      } else if (column.type.typeId === 6) {
+        // Booleans are unpacked using arrow fundamentals unless we see
+        // a reason to do it directly with bit operations (such as the null checks)
+        // being expensive.
+        for (let i = 0; i < tile.record_batch.numRows; i++) {
+          buffer[i] = column.get(i) ? 1 : 0;
         }
       } else if (source_buffer.stride === 2 && column.type.typeId === 10) {
         // 64-bit timestamped are internally represented as two 32-bit ints in the arrow arrays.
@@ -1265,7 +1288,7 @@ export class TileBufferManager<T extends Tile> {
         // This problem may creep up in other 64-bit types as we go, so keep an eye out.
         const copy = new Int32Array(source_buffer.values).buffer;
         const view64 = new BigInt64Array(copy);
-        const timetype = column?.type?.unit as number;
+        const timetype = column.type.unit as number;
         // All times are represented as milliseconds on the
         // GPU to align with the Javascript numbers. More or less,
         // at least.
@@ -1332,7 +1355,7 @@ class MultipurposeBufferSet {
   private buffers: Buffer[];
   public buffer_size: number;
   private pointer: number; // the byte offset to start the next allocation from.
-  private freed_buffers: BufferLocation[] = [];
+  private freed_buffers: DS.BufferLocation[] = [];
   /**
    *
    * @param regl the Regl context we're using.
@@ -1374,7 +1397,7 @@ class MultipurposeBufferSet {
    *
    * @param buff The location of the buffer we're done with.
    */
-  free_block(buff: BufferLocation) {
+  free_block(buff: DS.BufferLocation) {
     this.freed_buffers.push(buff);
   }
 
@@ -1385,7 +1408,7 @@ class MultipurposeBufferSet {
    * @returns
    */
 
-  allocate_block(items: number, bytes_per_item: number): BufferLocation {
+  allocate_block(items: number, bytes_per_item: number): DS.BufferLocation {
     // Call dibs on a block of this buffer.
     // NB size is in **bytes**
 
@@ -1414,13 +1437,13 @@ class MultipurposeBufferSet {
       this.generate_new_buffer();
     }
 
-    const value: BufferLocation = {
+    const value: DS.BufferLocation = {
       // First slot stores the active buffer.
       buffer: this.buffers[0],
       offset: this.pointer,
       stride: bytes_per_item,
       byte_size: items * bytes_per_item,
-    } as BufferLocation;
+    } as DS.BufferLocation;
     this.pointer += items * bytes_per_item;
     return value;
   }

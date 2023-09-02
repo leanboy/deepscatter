@@ -5618,7 +5618,7 @@ class Zoom {
     renderer.zoom.initialize_zoom();
     return this;
   }
-  zoom_to(k, x = null, y = null, duration = 4e3) {
+  zoom_to(k, x, y, duration = 4e3) {
     const scales2 = this.scales();
     const { svg_element_selection: canvas, zoomer, width, height } = this;
     const t = identity$3.translate(width / 2, height / 2).scale(k).translate(-scales2.x(x), -scales2.y(y));
@@ -5635,7 +5635,7 @@ class Zoom {
       (update) => update.html((d) => this.scatterplot.tooltip_html(d.data)),
       (exit) => exit.call((e) => e.remove())
     );
-    els.html((d) => this.scatterplot.tooltip_html(d.data)).style("transform", (d) => {
+    els.html((d) => this.scatterplot.tooltip_html(d.data, this)).style("transform", (d) => {
       const t = `translate(${+d.x + d.dx}px, ${+d.y + d.dy}px)`;
       return t;
     });
@@ -5643,7 +5643,7 @@ class Zoom {
   zoom_to_bbox(corners, duration = 4e3, buffer = 1.111) {
     const scales2 = this.scales();
     let [x02, x12] = corners.x.map(scales2.x);
-    let [y02, y12] = corners.y.map(scales2.y);
+    const [y02, y12] = corners.y.map(scales2.y);
     if (this.scatterplot.prefs.zoom_align === "right") {
       const aspect_ratio = this.width / this.height;
       const data_aspect_ratio = (x12 - x02) / (y12 - y02);
@@ -5696,12 +5696,9 @@ class Zoom {
       (update) => update.attr("fill", (dd) => this.scatterplot.dim("color").apply(dd)),
       (exit) => exit.call((e) => {
         e.remove();
-        if (this.prefs.exit_function) {
-          this.prefs.exit_function();
-        }
       })
     ).on("click", (ev, dd) => {
-      this.scatterplot.click_function(dd);
+      this.scatterplot.click_function(dd, this.scatterplot);
     });
   }
   set_highlit_point(point) {
@@ -22922,10 +22919,11 @@ class Aesthetic {
     return this._scale = scale;
   }
   get column() {
+    var _a2, _b2;
     if (this.field === null) {
       throw new Error("Can't retrieve column for aesthetic without a field");
     }
-    if (this.dataset.root_tile.record_batch) {
+    if ((_b2 = (_a2 = this.dataset) == null ? void 0 : _a2.root_tile) == null ? void 0 : _b2.record_batch) {
       const col = this.dataset.root_tile.record_batch.getChild(this.field);
       if (col === void 0 || col === null) {
         throw new Error("Can't find column " + this.field);
@@ -23084,7 +23082,7 @@ class Aesthetic {
     }
     const c2 = this.dataset.root_tile.record_batch.getChild(this.field);
     if (c2 === null) {
-      throw `No column ${this.field} on arrow table for aesthetic`;
+      throw new Error(`No column ${this.field} on arrow table for aesthetic`);
     }
     return c2;
   }
@@ -24334,7 +24332,7 @@ class ReglRenderer extends Renderer {
         ];
       })
     ];
-    this.initialize();
+    void this.initialize();
     this._buffers = new MultipurposeBufferSet(this.regl, this.buffer_size);
   }
   get buffers() {
@@ -24451,6 +24449,9 @@ class ReglRenderer extends Renderer {
     });
     this._renderer(prop_list);
   }
+  /**
+   * Actions that run on a single animation tick.
+   */
   tick() {
     const { prefs } = this;
     const { regl: regl2, tileSet } = this;
@@ -25261,14 +25262,13 @@ class TileBufferManager {
     return this.tile.record_batch.numRows;
   }
   async create_buffer_data(key) {
-    var _a2;
     const { tile } = this;
     if (!tile.ready) {
       throw new Error("Tile table not present.");
     }
     let column = tile.record_batch.getChild(key);
     if (!column) {
-      const transformation = await tile.dataset.transformations[key];
+      const transformation = tile.dataset.transformations[key];
       if (transformation !== void 0) {
         await tile.apply_transformation(key);
         column = tile.record_batch.getChild(key);
@@ -25284,17 +25284,29 @@ class TileBufferManager {
         );
       }
     }
-    if (column.type.typeId !== 3) {
+    if (column.data.length !== 1) {
+      throw new Error(
+        `Column ${key} has ${column.data.length} buffers, not 1.`
+      );
+    }
+    if (!column.type || !column.type.typeId) {
+      throw new Error(`Column ${key} has no type.`);
+    }
+    if (!column.type || column.type.typeId !== 3) {
       const buffer = new Float32Array(tile.record_batch.numRows);
       const source_buffer = column.data[0];
-      if (column.type.dictionary) {
+      if (column.type["dictionary"]) {
         for (let i = 0; i < tile.record_batch.numRows; i++) {
           buffer[i] = source_buffer.values[i] - 2047;
+        }
+      } else if (column.type.typeId === 6) {
+        for (let i = 0; i < tile.record_batch.numRows; i++) {
+          buffer[i] = column.get(i) ? 1 : 0;
         }
       } else if (source_buffer.stride === 2 && column.type.typeId === 10) {
         const copy2 = new Int32Array(source_buffer.values).buffer;
         const view64 = new BigInt64Array(copy2);
-        const timetype = (_a2 = column == null ? void 0 : column.type) == null ? void 0 : _a2.unit;
+        const timetype = column.type.unit;
         const divisor = timetype === 0 ? 1e-3 : timetype === 1 ? 1 : timetype === 2 ? 1e3 : timetype === 3 ? 1e6 : 42;
         if (divisor === 42) {
           throw new Error(`Unknown time type ${timetype}`);
@@ -25494,7 +25506,7 @@ function __asyncDelegator(o) {
   }, i;
   function verb(n, f) {
     i[n] = o[n] ? function(v) {
-      return (p = !p) ? { value: __await(o[n](v)), done: n === "return" } : f ? f(v) : v;
+      return (p = !p) ? { value: __await(o[n](v)), done: false } : f ? f(v) : v;
     } : f;
   }
 }
@@ -25518,25 +25530,14 @@ function __asyncValues(o) {
     }, reject);
   }
 }
+typeof SuppressedError === "function" ? SuppressedError : function(error, suppressed, message) {
+  var e = new Error(message);
+  return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
+};
 const decoder = new TextDecoder("utf-8");
 const decodeUtf8 = (buffer) => decoder.decode(buffer);
 const encoder = new TextEncoder();
 const encodeUtf8 = (value) => encoder.encode(value);
-const [BigIntCtor, BigIntAvailable] = (() => {
-  const BigIntUnavailableError = () => {
-    throw new Error("BigInt is not available in this environment");
-  };
-  function BigIntUnavailable() {
-    throw BigIntUnavailableError();
-  }
-  BigIntUnavailable.asIntN = () => {
-    throw BigIntUnavailableError();
-  };
-  BigIntUnavailable.asUintN = () => {
-    throw BigIntUnavailableError();
-  };
-  return typeof BigInt !== "undefined" ? [BigInt, true] : [BigIntUnavailable, false];
-})();
 const [BigInt64ArrayCtor, BigInt64ArrayAvailable] = (() => {
   const BigInt64ArrayUnavailableError = () => {
     throw new Error("BigInt64Array is not available in this environment");
@@ -26189,15 +26190,8 @@ function bignumToNumber(bn) {
   }
   return number2;
 }
-let bignumToString;
-let bignumToBigInt;
-if (!BigIntAvailable) {
-  bignumToString = decimalToString;
-  bignumToBigInt = bignumToString;
-} else {
-  bignumToBigInt = (a) => a.byteLength === 8 ? new a["BigIntArray"](a.buffer, a.byteOffset, 1)[0] : decimalToString(a);
-  bignumToString = (a) => a.byteLength === 8 ? `${new a["BigIntArray"](a.buffer, a.byteOffset, 1)[0]}` : decimalToString(a);
-}
+const bignumToString = (a) => a.byteLength === 8 ? `${new a["BigIntArray"](a.buffer, a.byteOffset, 1)[0]}` : decimalToString(a);
+const bignumToBigInt = (a) => a.byteLength === 8 ? new a["BigIntArray"](a.buffer, a.byteOffset, 1)[0] : decimalToString(a);
 function decimalToString(a) {
   let digits = "";
   const base64 = new Uint32Array(2);
@@ -26252,6 +26246,12 @@ class BN {
   constructor(num, isSigned) {
     return BN.new(num, isSigned);
   }
+}
+function bigIntToNumber(number2) {
+  if (typeof number2 === "bigint" && (number2 < Number.MIN_SAFE_INTEGER || number2 > Number.MAX_SAFE_INTEGER)) {
+    throw new TypeError(`${number2} is not safe to convert to a number.`);
+  }
+  return Number(number2);
 }
 var _a$3, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u;
 class DataType {
@@ -26800,7 +26800,7 @@ class Dictionary extends DataType {
     this.indices = indices;
     this.dictionary = dictionary;
     this.isOrdered = isOrdered || false;
-    this.id = id2 == null ? getId() : typeof id2 === "number" ? id2 : id2.low;
+    this.id = id2 == null ? getId() : bigIntToNumber(id2);
   }
   get typeId() {
     return Type$1.Dictionary;
@@ -28080,31 +28080,6 @@ function popcnt_uint32(uint32) {
 }
 const kUnknownNullCount = -1;
 class Data {
-  constructor(type, offset, length, nullCount, buffers, children2 = [], dictionary) {
-    this.type = type;
-    this.children = children2;
-    this.dictionary = dictionary;
-    this.offset = Math.floor(Math.max(offset || 0, 0));
-    this.length = Math.floor(Math.max(length || 0, 0));
-    this._nullCount = Math.floor(Math.max(nullCount || 0, -1));
-    let buffer;
-    if (buffers instanceof Data) {
-      this.stride = buffers.stride;
-      this.values = buffers.values;
-      this.typeIds = buffers.typeIds;
-      this.nullBitmap = buffers.nullBitmap;
-      this.valueOffsets = buffers.valueOffsets;
-    } else {
-      this.stride = strideForType(type);
-      if (buffers) {
-        (buffer = buffers[0]) && (this.valueOffsets = buffer);
-        (buffer = buffers[1]) && (this.values = buffer);
-        (buffer = buffers[2]) && (this.nullBitmap = buffer);
-        (buffer = buffers[3]) && (this.typeIds = buffer);
-      }
-    }
-    this.nullable = this._nullCount !== 0 && this.nullBitmap && this.nullBitmap.byteLength > 0;
-  }
   get typeId() {
     return this.type.typeId;
   }
@@ -28130,6 +28105,31 @@ class Data {
       this._nullCount = nullCount = this.length - popcnt_bit_range(nullBitmap, this.offset, this.offset + this.length);
     }
     return nullCount;
+  }
+  constructor(type, offset, length, nullCount, buffers, children2 = [], dictionary) {
+    this.type = type;
+    this.children = children2;
+    this.dictionary = dictionary;
+    this.offset = Math.floor(Math.max(offset || 0, 0));
+    this.length = Math.floor(Math.max(length || 0, 0));
+    this._nullCount = Math.floor(Math.max(nullCount || 0, -1));
+    let buffer;
+    if (buffers instanceof Data) {
+      this.stride = buffers.stride;
+      this.values = buffers.values;
+      this.typeIds = buffers.typeIds;
+      this.nullBitmap = buffers.nullBitmap;
+      this.valueOffsets = buffers.valueOffsets;
+    } else {
+      this.stride = strideForType(type);
+      if (buffers) {
+        (buffer = buffers[0]) && (this.valueOffsets = buffer);
+        (buffer = buffers[1]) && (this.values = buffer);
+        (buffer = buffers[2]) && (this.nullBitmap = buffer);
+        (buffer = buffers[3]) && (this.typeIds = buffer);
+      }
+    }
+    this.nullable = this._nullCount !== 0 && this.nullBitmap && this.nullBitmap.byteLength > 0;
   }
   getValid(index) {
     if (this.nullable && this.nullCount > 0) {
@@ -29113,10 +29113,10 @@ class Block {
   }
   static createBlock(builder, offset, metaDataLength, bodyLength) {
     builder.prep(8, 24);
-    builder.writeInt64(bodyLength);
+    builder.writeInt64(BigInt(bodyLength !== null && bodyLength !== void 0 ? bodyLength : 0));
     builder.pad(4);
     builder.writeInt32(metaDataLength);
-    builder.writeInt64(offset);
+    builder.writeInt64(BigInt(offset !== null && offset !== void 0 ? offset : 0));
     return builder.offset();
   }
 }
@@ -29128,22 +29128,6 @@ const int32 = new Int32Array(2);
 const float32 = new Float32Array(int32.buffer);
 const float64 = new Float64Array(int32.buffer);
 const isLittleEndian = new Uint16Array(new Uint8Array([1, 0]).buffer)[0] === 1;
-let Long$3 = class Long {
-  constructor(low, high) {
-    this.low = low | 0;
-    this.high = high | 0;
-  }
-  static create(low, high) {
-    return low == 0 && high == 0 ? Long.ZERO : new Long(low, high);
-  }
-  toFloat64() {
-    return (this.low >>> 0) + this.high * 4294967296;
-  }
-  equals(other) {
-    return this.low == other.low && this.high == other.high;
-  }
-};
-Long$3.ZERO = new Long$3(0, 0);
 var Encoding;
 (function(Encoding2) {
   Encoding2[Encoding2["UTF8_BYTES"] = 1] = "UTF8_BYTES";
@@ -29156,6 +29140,7 @@ let ByteBuffer$2 = class ByteBuffer {
   constructor(bytes_) {
     this.bytes_ = bytes_;
     this.position_ = 0;
+    this.text_decoder_ = new TextDecoder();
   }
   /**
    * Create and allocate a new ByteBuffer with a given size.
@@ -29209,10 +29194,10 @@ let ByteBuffer$2 = class ByteBuffer {
     return this.readInt32(offset) >>> 0;
   }
   readInt64(offset) {
-    return new Long$3(this.readInt32(offset), this.readInt32(offset + 4));
+    return BigInt.asIntN(64, BigInt(this.readUint32(offset)) + (BigInt(this.readUint32(offset + 4)) << BigInt(32)));
   }
   readUint64(offset) {
-    return new Long$3(this.readUint32(offset), this.readUint32(offset + 4));
+    return BigInt.asUintN(64, BigInt(this.readUint32(offset)) + (BigInt(this.readUint32(offset + 4)) << BigInt(32)));
   }
   readFloat32(offset) {
     int32[0] = this.readInt32(offset);
@@ -29250,12 +29235,12 @@ let ByteBuffer$2 = class ByteBuffer {
     this.bytes_[offset + 3] = value >> 24;
   }
   writeInt64(offset, value) {
-    this.writeInt32(offset, value.low);
-    this.writeInt32(offset + 4, value.high);
+    this.writeInt32(offset, Number(BigInt.asIntN(32, value)));
+    this.writeInt32(offset + 4, Number(BigInt.asIntN(32, value >> BigInt(32))));
   }
   writeUint64(offset, value) {
-    this.writeUint32(offset, value.low);
-    this.writeUint32(offset + 4, value.high);
+    this.writeUint32(offset, Number(BigInt.asUintN(32, value)));
+    this.writeUint32(offset + 4, Number(BigInt.asUintN(32, value >> BigInt(32))));
   }
   writeFloat32(offset, value) {
     float32[0] = value;
@@ -29301,10 +29286,9 @@ let ByteBuffer$2 = class ByteBuffer {
    * Create a JavaScript string from UTF-8 data stored inside the FlatBuffer.
    * This allocates a new string and converts to wide chars upon each access.
    *
-   * To avoid the conversion to UTF-16, pass Encoding.UTF8_BYTES as
-   * the "optionalEncoding" argument. This is useful for avoiding conversion to
-   * and from UTF-16 when the data will just be packaged back up in another
-   * FlatBuffer later on.
+   * To avoid the conversion to string, pass Encoding.UTF8_BYTES as the
+   * "optionalEncoding" argument. This is useful for avoiding conversion when
+   * the data will just be packaged back up in another FlatBuffer later on.
    *
    * @param offset
    * @param opt_encoding Defaults to UTF16_STRING
@@ -29312,39 +29296,12 @@ let ByteBuffer$2 = class ByteBuffer {
   __string(offset, opt_encoding) {
     offset += this.readInt32(offset);
     const length = this.readInt32(offset);
-    let result = "";
-    let i = 0;
     offset += SIZEOF_INT;
-    if (opt_encoding === Encoding.UTF8_BYTES) {
-      return this.bytes_.subarray(offset, offset + length);
-    }
-    while (i < length) {
-      let codePoint;
-      const a = this.readUint8(offset + i++);
-      if (a < 192) {
-        codePoint = a;
-      } else {
-        const b = this.readUint8(offset + i++);
-        if (a < 224) {
-          codePoint = (a & 31) << 6 | b & 63;
-        } else {
-          const c2 = this.readUint8(offset + i++);
-          if (a < 240) {
-            codePoint = (a & 15) << 12 | (b & 63) << 6 | c2 & 63;
-          } else {
-            const d = this.readUint8(offset + i++);
-            codePoint = (a & 7) << 18 | (b & 63) << 12 | (c2 & 63) << 6 | d & 63;
-          }
-        }
-      }
-      if (codePoint < 65536) {
-        result += String.fromCharCode(codePoint);
-      } else {
-        codePoint -= 65536;
-        result += String.fromCharCode((codePoint >> 10) + 55296, (codePoint & (1 << 10) - 1) + 56320);
-      }
-    }
-    return result;
+    const utf8bytes = this.bytes_.subarray(offset, offset + length);
+    if (opt_encoding === Encoding.UTF8_BYTES)
+      return utf8bytes;
+    else
+      return this.text_decoder_.decode(utf8bytes);
   }
   /**
    * Handle unions that can contain string as its member, if a Table-derived type then initialize it,
@@ -29389,19 +29346,14 @@ let ByteBuffer$2 = class ByteBuffer {
     return true;
   }
   /**
-   * A helper function to avoid generated code depending on this file directly.
-   */
-  createLong(low, high) {
-    return Long$3.create(low, high);
-  }
-  /**
    * A helper function for generating list for obj api
    */
   createScalarList(listAccessor, listLength) {
     const ret = [];
     for (let i = 0; i < listLength; ++i) {
-      if (listAccessor(i) !== null) {
-        ret.push(listAccessor(i));
+      const val = listAccessor(i);
+      if (val !== null) {
+        ret.push(val);
       }
     }
     return ret;
@@ -29437,6 +29389,7 @@ let Builder$2 = class Builder {
     this.vector_num_elems = 0;
     this.force_defaults = false;
     this.string_maps = null;
+    this.text_encoder = new TextEncoder();
     let initial_size;
     if (!opt_initial_size) {
       initial_size = 1024;
@@ -29530,7 +29483,7 @@ let Builder$2 = class Builder {
   }
   /**
    * Add an `int8` to the buffer, properly aligned, and grows the buffer (if necessary).
-   * @param value The `int8` to add the the buffer.
+   * @param value The `int8` to add the buffer.
    */
   addInt8(value) {
     this.prep(1, 0);
@@ -29538,7 +29491,7 @@ let Builder$2 = class Builder {
   }
   /**
    * Add an `int16` to the buffer, properly aligned, and grows the buffer (if necessary).
-   * @param value The `int16` to add the the buffer.
+   * @param value The `int16` to add the buffer.
    */
   addInt16(value) {
     this.prep(2, 0);
@@ -29546,7 +29499,7 @@ let Builder$2 = class Builder {
   }
   /**
    * Add an `int32` to the buffer, properly aligned, and grows the buffer (if necessary).
-   * @param value The `int32` to add the the buffer.
+   * @param value The `int32` to add the buffer.
    */
   addInt32(value) {
     this.prep(4, 0);
@@ -29554,7 +29507,7 @@ let Builder$2 = class Builder {
   }
   /**
    * Add an `int64` to the buffer, properly aligned, and grows the buffer (if necessary).
-   * @param value The `int64` to add the the buffer.
+   * @param value The `int64` to add the buffer.
    */
   addInt64(value) {
     this.prep(8, 0);
@@ -29562,7 +29515,7 @@ let Builder$2 = class Builder {
   }
   /**
    * Add a `float32` to the buffer, properly aligned, and grows the buffer (if necessary).
-   * @param value The `float32` to add the the buffer.
+   * @param value The `float32` to add the buffer.
    */
   addFloat32(value) {
     this.prep(4, 0);
@@ -29570,7 +29523,7 @@ let Builder$2 = class Builder {
   }
   /**
    * Add a `float64` to the buffer, properly aligned, and grows the buffer (if necessary).
-   * @param value The `float64` to add the the buffer.
+   * @param value The `float64` to add the buffer.
    */
   addFloat64(value) {
     this.prep(8, 0);
@@ -29595,7 +29548,7 @@ let Builder$2 = class Builder {
     }
   }
   addFieldInt64(voffset, value, defaultValue) {
-    if (this.force_defaults || !value.equals(defaultValue)) {
+    if (this.force_defaults || value !== defaultValue) {
       this.addInt64(value);
       this.slot(voffset);
     }
@@ -29790,7 +29743,7 @@ let Builder$2 = class Builder {
   requiredField(table, field) {
     const table_start = this.bb.capacity() - table;
     const vtable_start = table_start - this.bb.readInt32(table_start);
-    const ok = this.bb.readInt16(vtable_start + field) != 0;
+    const ok = field < this.bb.readInt16(vtable_start) && this.bb.readInt16(vtable_start + field) != 0;
     if (!ok) {
       throw new Error("FlatBuffers: field " + field + " must be set");
     }
@@ -29850,40 +29803,14 @@ let Builder$2 = class Builder {
    * @return The offset in the buffer where the encoded string starts
    */
   createString(s) {
-    if (!s) {
+    if (s === null || s === void 0) {
       return 0;
     }
     let utf8;
     if (s instanceof Uint8Array) {
       utf8 = s;
     } else {
-      utf8 = [];
-      let i = 0;
-      while (i < s.length) {
-        let codePoint;
-        const a = s.charCodeAt(i++);
-        if (a < 55296 || a >= 56320) {
-          codePoint = a;
-        } else {
-          const b = s.charCodeAt(i++);
-          codePoint = (a << 10) + b + (65536 - (55296 << 10) - 56320);
-        }
-        if (codePoint < 128) {
-          utf8.push(codePoint);
-        } else {
-          if (codePoint < 2048) {
-            utf8.push(codePoint >> 6 & 31 | 192);
-          } else {
-            if (codePoint < 65536) {
-              utf8.push(codePoint >> 12 & 15 | 224);
-            } else {
-              utf8.push(codePoint >> 18 & 7 | 240, codePoint >> 12 & 63 | 128);
-            }
-            utf8.push(codePoint >> 6 & 63 | 128);
-          }
-          utf8.push(codePoint & 63 | 128);
-        }
-      }
+      utf8 = this.text_encoder.encode(s);
     }
     this.addInt8(0);
     this.startVector(1, utf8.length, 1);
@@ -29892,12 +29819,6 @@ let Builder$2 = class Builder {
       bytes[offset++] = utf8[i];
     }
     return this.endVector();
-  }
-  /**
-   * A helper function to avoid generated code depending on this file directly.
-   */
-  createLong(low, high) {
-    return Long$3.create(low, high);
   }
   /**
    * A helper function to pack an object
@@ -29933,7 +29854,7 @@ let Builder$2 = class Builder {
   }
   createStructOffsetList(list, startFunc) {
     startFunc(this, list.length);
-    this.createObjectOffsetList(list);
+    this.createObjectOffsetList(list.slice().reverse());
     return this.endVector();
   }
 };
@@ -30068,7 +29989,7 @@ class DictionaryEncoding {
    */
   id() {
     const offset = this.bb.__offset(this.bb_pos, 4);
-    return offset ? this.bb.readInt64(this.bb_pos + offset) : this.bb.createLong(0, 0);
+    return offset ? this.bb.readInt64(this.bb_pos + offset) : BigInt("0");
   }
   /**
    * The dictionary indices are constrained to be non-negative integers. If
@@ -30099,7 +30020,7 @@ class DictionaryEncoding {
     builder.startObject(4);
   }
   static addId(builder, id2) {
-    builder.addFieldInt64(0, id2, builder.createLong(0, 0));
+    builder.addFieldInt64(0, id2, BigInt("0"));
   }
   static addIndexType(builder, indexTypeOffset) {
     builder.addFieldOffset(1, indexTypeOffset, 0);
@@ -30789,6 +30710,7 @@ var Type;
   Type2[Type2["LargeBinary"] = 19] = "LargeBinary";
   Type2[Type2["LargeUtf8"] = 20] = "LargeUtf8";
   Type2[Type2["LargeList"] = 21] = "LargeList";
+  Type2[Type2["RunEndEncoded"] = 22] = "RunEndEncoded";
 })(Type || (Type = {}));
 let Field$1 = class Field {
   constructor() {
@@ -30825,7 +30747,6 @@ let Field$1 = class Field {
   /**
    * This is the type of the decoded value if the field is dictionary encoded.
    */
-  // @ts-ignore
   type(obj) {
     const offset = this.bb.__offset(this.bb_pos, 10);
     return offset ? this.bb.__union(obj, this.bb_pos + offset) : null;
@@ -30956,7 +30877,7 @@ let Schema$1 = class Schema {
    */
   features(index) {
     const offset = this.bb.__offset(this.bb_pos, 10);
-    return offset ? this.bb.readInt64(this.bb.__vector(this.bb_pos + offset) + index * 8) : this.bb.createLong(0, 0);
+    return offset ? this.bb.readInt64(this.bb.__vector(this.bb_pos + offset) + index * 8) : BigInt(0);
   }
   featuresLength() {
     const offset = this.bb.__offset(this.bb_pos, 10);
@@ -31180,12 +31101,6 @@ Schema2.prototype.fields = null;
 Schema2.prototype.metadata = null;
 Schema2.prototype.dictionaries = null;
 class Field2 {
-  constructor(name, type, nullable = false, metadata) {
-    this.name = name;
-    this.type = type;
-    this.nullable = nullable;
-    this.metadata = metadata || /* @__PURE__ */ new Map();
-  }
   /** @nocollapse */
   static new(...args) {
     let [name, type, nullable, metadata] = args;
@@ -31196,6 +31111,12 @@ class Field2 {
       metadata === void 0 && (metadata = args[0].metadata);
     }
     return new Field2(`${name}`, type, nullable, metadata);
+  }
+  constructor(name, type, nullable = false, metadata) {
+    this.name = name;
+    this.type = type;
+    this.nullable = nullable;
+    this.metadata = metadata || /* @__PURE__ */ new Map();
   }
   get typeId() {
     return this.type.typeId;
@@ -31236,16 +31157,9 @@ function generateDictionaryMap(fields, dictionaries = /* @__PURE__ */ new Map())
   }
   return dictionaries;
 }
-var Long$2 = Long$3;
 var Builder$1 = Builder$2;
 var ByteBuffer$1 = ByteBuffer$2;
 class Footer_ {
-  constructor(schema, version = MetadataVersion$1.V4, recordBatches, dictionaryBatches) {
-    this.schema = schema;
-    this.version = version;
-    recordBatches && (this._recordBatches = recordBatches);
-    dictionaryBatches && (this._dictionaryBatches = dictionaryBatches);
-  }
   /** @nocollapse */
   static decode(buf) {
     buf = new ByteBuffer$1(toUint8Array(buf));
@@ -31281,6 +31195,12 @@ class Footer_ {
   get numDictionaries() {
     return this._dictionaryBatches.length;
   }
+  constructor(schema, version = MetadataVersion$1.V4, recordBatches, dictionaryBatches) {
+    this.schema = schema;
+    this.version = version;
+    recordBatches && (this._recordBatches = recordBatches);
+    dictionaryBatches && (this._dictionaryBatches = dictionaryBatches);
+  }
   *recordBatches() {
     for (let block, i = -1, n = this.numRecordBatches; ++i < n; ) {
       if (block = this.getRecordBatch(i)) {
@@ -31303,15 +31223,15 @@ class Footer_ {
   }
 }
 class OffHeapFooter extends Footer_ {
-  constructor(schema, _footer) {
-    super(schema, _footer.version());
-    this._footer = _footer;
-  }
   get numRecordBatches() {
     return this._footer.recordBatchesLength();
   }
   get numDictionaries() {
     return this._footer.dictionariesLength();
+  }
+  constructor(schema, _footer) {
+    super(schema, _footer.version());
+    this._footer = _footer;
   }
   getRecordBatch(index) {
     if (index >= 0 && index < this.numRecordBatches) {
@@ -31333,11 +31253,6 @@ class OffHeapFooter extends Footer_ {
   }
 }
 class FileBlock {
-  constructor(metaDataLength, bodyLength, offset) {
-    this.metaDataLength = metaDataLength;
-    this.offset = typeof offset === "number" ? offset : offset.low;
-    this.bodyLength = typeof bodyLength === "number" ? bodyLength : bodyLength.low;
-  }
   /** @nocollapse */
   static decode(block) {
     return new FileBlock(block.metaDataLength(), block.bodyLength(), block.offset());
@@ -31345,9 +31260,14 @@ class FileBlock {
   /** @nocollapse */
   static encode(b, fileBlock) {
     const { metaDataLength } = fileBlock;
-    const offset = new Long$2(fileBlock.offset, 0);
-    const bodyLength = new Long$2(fileBlock.bodyLength, 0);
+    const offset = BigInt(fileBlock.offset);
+    const bodyLength = BigInt(fileBlock.bodyLength);
     return Block.createBlock(b, offset, metaDataLength, bodyLength);
+  }
+  constructor(metaDataLength, bodyLength, offset) {
+    this.metaDataLength = metaDataLength;
+    this.offset = bigIntToNumber(offset);
+    this.bodyLength = bigIntToNumber(bodyLength);
   }
 }
 const ITERATOR_DONE = Object.freeze({ done: true, value: void 0 });
@@ -31482,21 +31402,27 @@ class AsyncByteQueue extends AsyncQueue {
   }
   toUint8Array(sync = false) {
     return sync ? joinUint8Arrays(this._values)[0] : (() => __awaiter(this, void 0, void 0, function* () {
-      var e_1, _a2;
+      var _a2, e_1, _b2, _c2;
       const buffers = [];
       let byteLength = 0;
       try {
-        for (var _b2 = __asyncValues(this), _c2; _c2 = yield _b2.next(), !_c2.done; ) {
-          const chunk = _c2.value;
-          buffers.push(chunk);
-          byteLength += chunk.byteLength;
+        for (var _d2 = true, _e2 = __asyncValues(this), _f2; _f2 = yield _e2.next(), _a2 = _f2.done, !_a2; ) {
+          _c2 = _f2.value;
+          _d2 = false;
+          try {
+            const chunk = _c2;
+            buffers.push(chunk);
+            byteLength += chunk.byteLength;
+          } finally {
+            _d2 = true;
+          }
         }
       } catch (e_1_1) {
         e_1 = { error: e_1_1 };
       } finally {
         try {
-          if (_c2 && !_c2.done && (_a2 = _b2.return))
-            yield _a2.call(_b2);
+          if (!_d2 && !_a2 && (_b2 = _e2.return))
+            yield _b2.call(_e2);
         } finally {
           if (e_1)
             throw e_1.error;
@@ -31649,7 +31575,7 @@ class RandomAccessFile extends ByteStream {
     super();
     this.position = 0;
     this.buffer = toUint8Array(buffer);
-    this.size = typeof byteLength === "undefined" ? this.buffer.byteLength : byteLength;
+    this.size = byteLength === void 0 ? this.buffer.byteLength : byteLength;
   }
   readInt32(position) {
     const { buffer, byteOffset } = this.readAt(position, 4);
@@ -33006,8 +32932,8 @@ class Buffer {
   }
   static createBuffer(builder, offset, length) {
     builder.prep(8, 16);
-    builder.writeInt64(length);
-    builder.writeInt64(offset);
+    builder.writeInt64(BigInt(length !== null && length !== void 0 ? length : 0));
+    builder.writeInt64(BigInt(offset !== null && offset !== void 0 ? offset : 0));
     return builder.offset();
   }
 }
@@ -33041,8 +32967,8 @@ let FieldNode$1 = class FieldNode {
   }
   static createFieldNode(builder, length, null_count) {
     builder.prep(8, 16);
-    builder.writeInt64(null_count);
-    builder.writeInt64(length);
+    builder.writeInt64(BigInt(null_count !== null && null_count !== void 0 ? null_count : 0));
+    builder.writeInt64(BigInt(length !== null && length !== void 0 ? length : 0));
     return builder.offset();
   }
 };
@@ -33069,7 +32995,7 @@ let RecordBatch$1 = class RecordBatch2 {
    */
   length() {
     const offset = this.bb.__offset(this.bb_pos, 4);
-    return offset ? this.bb.readInt64(this.bb_pos + offset) : this.bb.createLong(0, 0);
+    return offset ? this.bb.readInt64(this.bb_pos + offset) : BigInt("0");
   }
   /**
    * Nodes correspond to the pre-ordered flattened logical schema
@@ -33109,7 +33035,7 @@ let RecordBatch$1 = class RecordBatch2 {
     builder.startObject(4);
   }
   static addLength(builder, length) {
-    builder.addFieldInt64(0, length, builder.createLong(0, 0));
+    builder.addFieldInt64(0, length, BigInt("0"));
   }
   static addNodes(builder, nodesOffset) {
     builder.addFieldOffset(1, nodesOffset, 0);
@@ -33150,7 +33076,7 @@ let DictionaryBatch$1 = class DictionaryBatch {
   }
   id() {
     const offset = this.bb.__offset(this.bb_pos, 4);
-    return offset ? this.bb.readInt64(this.bb_pos + offset) : this.bb.createLong(0, 0);
+    return offset ? this.bb.readInt64(this.bb_pos + offset) : BigInt("0");
   }
   data(obj) {
     const offset = this.bb.__offset(this.bb_pos, 6);
@@ -33169,7 +33095,7 @@ let DictionaryBatch$1 = class DictionaryBatch {
     builder.startObject(3);
   }
   static addId(builder, id2) {
-    builder.addFieldInt64(0, id2, builder.createLong(0, 0));
+    builder.addFieldInt64(0, id2, BigInt("0"));
   }
   static addData(builder, dataOffset) {
     builder.addFieldOffset(1, dataOffset, 0);
@@ -33216,14 +33142,13 @@ let Message$1 = class Message {
     const offset = this.bb.__offset(this.bb_pos, 6);
     return offset ? this.bb.readUint8(this.bb_pos + offset) : MessageHeader.NONE;
   }
-  // @ts-ignore
   header(obj) {
     const offset = this.bb.__offset(this.bb_pos, 8);
     return offset ? this.bb.__union(obj, this.bb_pos + offset) : null;
   }
   bodyLength() {
     const offset = this.bb.__offset(this.bb_pos, 10);
-    return offset ? this.bb.readInt64(this.bb_pos + offset) : this.bb.createLong(0, 0);
+    return offset ? this.bb.readInt64(this.bb_pos + offset) : BigInt("0");
   }
   customMetadata(index, obj) {
     const offset = this.bb.__offset(this.bb_pos, 12);
@@ -33246,7 +33171,7 @@ let Message$1 = class Message {
     builder.addFieldOffset(2, headerOffset, 0);
   }
   static addBodyLength(builder, bodyLength) {
-    builder.addFieldInt64(3, bodyLength, builder.createLong(0, 0));
+    builder.addFieldInt64(3, bodyLength, BigInt("0"));
   }
   static addCustomMetadata(builder, customMetadataOffset) {
     builder.addFieldOffset(4, customMetadataOffset, 0);
@@ -33281,7 +33206,6 @@ let Message$1 = class Message {
     return Message.endMessage(builder);
   }
 };
-var Long$1 = Long$3;
 class TypeAssembler extends Visitor {
   visit(node, builder) {
     return node == null || builder == null ? void 0 : super.visit(node, builder);
@@ -33364,7 +33288,7 @@ class TypeAssembler extends Visitor {
   visitDictionary(node, b) {
     const indexType = this.visit(node.indices, b);
     DictionaryEncoding.startDictionaryEncoding(b);
-    DictionaryEncoding.addId(b, new Long$1(node.id, 0));
+    DictionaryEncoding.addId(b, BigInt(node.id));
     DictionaryEncoding.addIsOrdered(b, node.isOrdered);
     if (indexType !== void 0) {
       DictionaryEncoding.addIndexType(b, indexType);
@@ -33520,17 +33444,9 @@ function typeFromJSON(f, children2) {
   }
   throw new Error(`Unrecognized type: "${typeId}"`);
 }
-var Long2 = Long$3;
 var Builder2 = Builder$2;
 var ByteBuffer2 = ByteBuffer$2;
 class Message2 {
-  constructor(bodyLength, version, headerType, header) {
-    this._version = version;
-    this._headerType = headerType;
-    this.body = new Uint8Array(0);
-    header && (this._createHeader = () => header);
-    this._bodyLength = typeof bodyLength === "number" ? bodyLength : bodyLength.low;
-  }
   /** @nocollapse */
   static fromJSON(msg, headerType) {
     const message = new Message2(0, MetadataVersion$1.V4, headerType);
@@ -33563,7 +33479,7 @@ class Message2 {
     Message$1.addVersion(b, MetadataVersion$1.V4);
     Message$1.addHeader(b, headerOffset);
     Message$1.addHeaderType(b, message.headerType);
-    Message$1.addBodyLength(b, new Long2(message.bodyLength, 0));
+    Message$1.addBodyLength(b, BigInt(message.bodyLength));
     Message$1.finishMessageBuffer(b, Message$1.endMessage(b));
     return b.asUint8Array();
   }
@@ -33604,13 +33520,15 @@ class Message2 {
   isDictionaryBatch() {
     return this.headerType === MessageHeader$1.DictionaryBatch;
   }
+  constructor(bodyLength, version, headerType, header) {
+    this._version = version;
+    this._headerType = headerType;
+    this.body = new Uint8Array(0);
+    header && (this._createHeader = () => header);
+    this._bodyLength = bigIntToNumber(bodyLength);
+  }
 }
 class RecordBatch3 {
-  constructor(length, nodes, buffers) {
-    this._nodes = nodes;
-    this._buffers = buffers;
-    this._length = typeof length === "number" ? length : length.low;
-  }
   get nodes() {
     return this._nodes;
   }
@@ -33620,13 +33538,13 @@ class RecordBatch3 {
   get buffers() {
     return this._buffers;
   }
+  constructor(length, nodes, buffers) {
+    this._nodes = nodes;
+    this._buffers = buffers;
+    this._length = bigIntToNumber(length);
+  }
 }
 class DictionaryBatch2 {
-  constructor(data, id2, isDelta = false) {
-    this._data = data;
-    this._isDelta = isDelta;
-    this._id = typeof id2 === "number" ? id2 : id2.low;
-  }
   get id() {
     return this._id;
   }
@@ -33645,17 +33563,22 @@ class DictionaryBatch2 {
   get buffers() {
     return this.data.buffers;
   }
+  constructor(data, id2, isDelta = false) {
+    this._data = data;
+    this._isDelta = isDelta;
+    this._id = bigIntToNumber(id2);
+  }
 }
 class BufferRegion {
   constructor(offset, length) {
-    this.offset = typeof offset === "number" ? offset : offset.low;
-    this.length = typeof length === "number" ? length : length.low;
+    this.offset = bigIntToNumber(offset);
+    this.length = bigIntToNumber(length);
   }
 }
 class FieldNode2 {
   constructor(length, nullCount) {
-    this.length = typeof length === "number" ? length : length.low;
-    this.nullCount = typeof nullCount === "number" ? nullCount : nullCount.low;
+    this.length = bigIntToNumber(length);
+    this.nullCount = bigIntToNumber(nullCount);
   }
 }
 function messageHeaderFromJSON(message, type) {
@@ -33768,7 +33691,7 @@ function decodeField(f, dictionaries) {
   if (!dictionaries || !(dictMeta = f.dictionary())) {
     type = decodeFieldType(f, decodeFieldChildren(f, dictionaries));
     field = new Field2(f.name(), type, f.nullable(), decodeCustomMetadata(f));
-  } else if (!dictionaries.has(id2 = dictMeta.id().low)) {
+  } else if (!dictionaries.has(id2 = bigIntToNumber(dictMeta.id()))) {
     keys = (keys = dictMeta.indexType()) ? decodeIndexType(keys) : new Int32();
     dictionaries.set(id2, type = decodeFieldType(f, decodeFieldChildren(f, dictionaries)));
     dictType = new Dictionary(type, keys, id2, dictMeta.isOrdered());
@@ -33934,7 +33857,7 @@ function encodeRecordBatch(b, recordBatch) {
     BufferRegion.encode(b, b_);
   const buffersVectorOffset = b.endVector();
   RecordBatch$1.startRecordBatch(b);
-  RecordBatch$1.addLength(b, new Long2(recordBatch.length, 0));
+  RecordBatch$1.addLength(b, BigInt(recordBatch.length));
   RecordBatch$1.addNodes(b, nodesVectorOffset);
   RecordBatch$1.addBuffers(b, buffersVectorOffset);
   return RecordBatch$1.endRecordBatch(b);
@@ -33942,16 +33865,16 @@ function encodeRecordBatch(b, recordBatch) {
 function encodeDictionaryBatch(b, dictionaryBatch) {
   const dataOffset = RecordBatch3.encode(b, dictionaryBatch.data);
   DictionaryBatch$1.startDictionaryBatch(b);
-  DictionaryBatch$1.addId(b, new Long2(dictionaryBatch.id, 0));
+  DictionaryBatch$1.addId(b, BigInt(dictionaryBatch.id));
   DictionaryBatch$1.addIsDelta(b, dictionaryBatch.isDelta);
   DictionaryBatch$1.addData(b, dataOffset);
   return DictionaryBatch$1.endDictionaryBatch(b);
 }
 function encodeFieldNode(b, node) {
-  return FieldNode$1.createFieldNode(b, new Long2(node.length, 0), new Long2(node.nullCount, 0));
+  return FieldNode$1.createFieldNode(b, BigInt(node.length), BigInt(node.nullCount));
 }
 function encodeBufferRegion(b, node) {
-  return Buffer.createBuffer(b, new Long2(node.offset, 0), new Long2(node.length, 0));
+  return Buffer.createBuffer(b, BigInt(node.offset), BigInt(node.length));
 }
 const platformIsLittleEndian = (() => {
   const buffer = new ArrayBuffer(2);
@@ -34350,20 +34273,26 @@ class AsyncRecordBatchStreamReader extends RecordBatchReader {
     this._impl = _impl;
   }
   readAll() {
-    var e_1, _a2;
+    var _a2, e_1, _b2, _c2;
     return __awaiter(this, void 0, void 0, function* () {
       const batches = new Array();
       try {
-        for (var _b2 = __asyncValues(this), _c2; _c2 = yield _b2.next(), !_c2.done; ) {
-          const batch = _c2.value;
-          batches.push(batch);
+        for (var _d2 = true, _e2 = __asyncValues(this), _f2; _f2 = yield _e2.next(), _a2 = _f2.done, !_a2; ) {
+          _c2 = _f2.value;
+          _d2 = false;
+          try {
+            const batch = _c2;
+            batches.push(batch);
+          } finally {
+            _d2 = true;
+          }
         }
       } catch (e_1_1) {
         e_1 = { error: e_1_1 };
       } finally {
         try {
-          if (_c2 && !_c2.done && (_a2 = _b2.return))
-            yield _a2.call(_b2);
+          if (!_d2 && !_a2 && (_b2 = _e2.return))
+            yield _b2.call(_e2);
         } finally {
           if (e_1)
             throw e_1.error;
@@ -34392,18 +34321,18 @@ class AsyncRecordBatchFileReader extends AsyncRecordBatchStreamReader {
   }
 }
 class RecordBatchReaderImpl {
+  get numDictionaries() {
+    return this._dictionaryIndex;
+  }
+  get numRecordBatches() {
+    return this._recordBatchIndex;
+  }
   constructor(dictionaries = /* @__PURE__ */ new Map()) {
     this.closed = false;
     this.autoDestroy = true;
     this._dictionaryIndex = 0;
     this._recordBatchIndex = 0;
     this.dictionaries = dictionaries;
-  }
-  get numDictionaries() {
-    return this._dictionaryIndex;
-  }
-  get numRecordBatches() {
-    return this._recordBatchIndex;
   }
   isSync() {
     return false;
@@ -34607,9 +34536,6 @@ class AsyncRecordBatchStreamReaderImpl extends RecordBatchReaderImpl {
   }
 }
 class RecordBatchFileReaderImpl extends RecordBatchStreamReaderImpl {
-  constructor(source, dictionaries) {
-    super(source instanceof RandomAccessFile ? source : new RandomAccessFile(source), dictionaries);
-  }
   get footer() {
     return this._footer;
   }
@@ -34618,6 +34544,9 @@ class RecordBatchFileReaderImpl extends RecordBatchStreamReaderImpl {
   }
   get numRecordBatches() {
     return this._footer ? this._footer.numRecordBatches : 0;
+  }
+  constructor(source, dictionaries) {
+    super(source instanceof RandomAccessFile ? source : new RandomAccessFile(source), dictionaries);
   }
   isSync() {
     return true;
@@ -34689,11 +34618,6 @@ class RecordBatchFileReaderImpl extends RecordBatchStreamReaderImpl {
   }
 }
 class AsyncRecordBatchFileReaderImpl extends AsyncRecordBatchStreamReaderImpl {
-  constructor(source, ...rest) {
-    const byteLength = typeof rest[0] !== "number" ? rest.shift() : void 0;
-    const dictionaries = rest[0] instanceof Map ? rest.shift() : void 0;
-    super(source instanceof AsyncRandomAccessFile ? source : new AsyncRandomAccessFile(source, byteLength), dictionaries);
-  }
   get footer() {
     return this._footer;
   }
@@ -34702,6 +34626,11 @@ class AsyncRecordBatchFileReaderImpl extends AsyncRecordBatchStreamReaderImpl {
   }
   get numRecordBatches() {
     return this._footer ? this._footer.numRecordBatches : 0;
+  }
+  constructor(source, ...rest) {
+    const byteLength = typeof rest[0] !== "number" ? rest.shift() : void 0;
+    const dictionaries = rest[0] instanceof Map ? rest.shift() : void 0;
+    super(source instanceof AsyncRandomAccessFile ? source : new AsyncRandomAccessFile(source, byteLength), dictionaries);
   }
   isFile() {
     return true;
@@ -34869,6 +34798,7 @@ class Tile {
     this.key = String(Math.random());
     this.parent = null;
     this.dataset = dataset;
+    this.ready = false;
     if (dataset === void 0) {
       throw new Error("No dataset provided");
     }
@@ -35004,9 +34934,6 @@ class Tile {
     if (this._batch) {
       return this._batch;
     }
-    if (this._table_buffer && this._table_buffer.byteLength > 0) {
-      return this._batch = tableFromIPC(this._table_buffer).batches[0];
-    }
     throw new Error("Attempted to access table on tile without table buffer.");
   }
   get min_ix() {
@@ -35030,9 +34957,6 @@ class Tile {
   extend_promise(callback) {
     this.promise = this.promise.then(() => callback());
     return this.promise;
-  }
-  get ready() {
-    return this._table_buffer !== void 0 && this._table_buffer.byteLength > 0;
   }
   get _schema() {
     if (this.__schema) {
@@ -35137,26 +35061,38 @@ class QuadTile extends Tile {
   }
   async get_arrow(suffix = void 0) {
     let url = `${this.url}/${this.key}.feather`;
-    let headers = {};
-    if (window.localStorage.getItem("isLoggedIn") === "true") {
-      url = url.replace("/public", "");
-      const accessToken = localStorage.getItem('access_token');
-
-      headers = {
-        // credentials: 'include',
-        Authorization: `Bearer ${accessToken}`,
-      };
-    }
     if (suffix) {
       url = url.replace(".feather", `.${suffix}.feather`);
     }
-    const request = {
-      method: "GET",
-      ...headers
-    };
-    const response = await fetch(url, request);
-    const buffer = await response.arrayBuffer();
-    const tb = tableFromIPC(buffer);
+    let tb;
+    let buffer;
+    if (this.dataset.tileProxy !== void 0) {
+      const endpoint = new URL(url).pathname;
+      const bytes = await this.dataset.tileProxy.apiCall(
+        endpoint,
+        "GET",
+        null,
+        null,
+        { octetStreamAsUint8: true }
+      );
+      tb = tableFromIPC(bytes);
+    } else {
+      let headers = {};
+      if (window.localStorage.getItem("isLoggedIn") === "true") {
+        url = url.replace("/public", "");
+        const accessToken = localStorage.getItem("access_token");
+        headers = {
+          Authorization: `Bearer ${accessToken}`
+        };
+      }
+      const request = {
+        method: "GET",
+        ...headers
+      };
+      const response = await fetch(url, request);
+      buffer = await response.arrayBuffer();
+      tb = tableFromIPC(buffer);
+    }
     if (tb.batches.length > 1) {
       console.warn(
         `More than one record batch at ${url}; all but first batch will be ignored.`
@@ -35165,8 +35101,7 @@ class QuadTile extends Tile {
     const batch = tb.batches[0];
     if (suffix === void 0) {
       this.download_state = "Complete";
-      this._table_buffer = buffer;
-      this._batch = tableFromIPC(buffer).batches[0];
+      this._batch = tb.batches[0];
     }
     return batch;
   }
@@ -35180,6 +35115,7 @@ class QuadTile extends Tile {
     this._already_called = true;
     this.download_state = "In progress";
     this._download = this.get_arrow().then((batch) => {
+      this.ready = true;
       const metadata = batch.schema.metadata;
       const extent2 = metadata.get("extent");
       if (extent2) {
@@ -35287,6 +35223,7 @@ class ArrowTile extends Tile {
     this._min_ix = Number(row_1.ix);
     this.highest_known_ix = Number(this.max_ix);
     this.create_children();
+    this.ready = true;
   }
   create_children() {
     let ix = this.batch_num * 4;
@@ -35312,9 +35249,6 @@ class ArrowTile extends Tile {
   }
   download() {
     return Promise.resolve(this._batch);
-  }
-  get ready() {
-    return true;
   }
 }
 function p_in_rect(p, rect) {
@@ -35368,7 +35302,7 @@ function nothing() {
 class Dataset {
   /**
    * @param plot The plot to which this dataset belongs.
-  **/
+   **/
   constructor(plot) {
     this.transformations = {};
     this.extents = {};
@@ -35376,7 +35310,7 @@ class Dataset {
     this.plot = plot;
   }
   /**
-   * The highest known point that deepscatter has seen so far. This is used 
+   * The highest known point that deepscatter has seen so far. This is used
    * to adjust opacity size.
    */
   get highest_known_ix() {
@@ -35386,23 +35320,27 @@ class Dataset {
    * Attempts to build an Arrow table from all record batches.
    * If some batches have different transformations applied,
    * this will error
-   * 
-  **/
+   *
+   **/
   get table() {
     return new Table(
       this.map((d) => d).filter((d) => d.ready).map((d) => d.record_batch)
     );
   }
   static from_quadfeather(url, prefs, plot) {
-    return new QuadtileSet(url, prefs, plot);
+    const options = {};
+    if (plot.tileProxy) {
+      options["tileProxy"] = plot.tileProxy;
+    }
+    return new QuadtileSet(url, prefs, plot, options);
   }
   /**
    * Generate an ArrowDataset from a single Arrow table.
-   * 
+   *
    * @param table A single Arrow table
    * @param prefs The API Call to use for renering.
    * @param plot The Scatterplot to use.
-   * @returns 
+   * @returns
    */
   static from_arrow_table(table, prefs, plot) {
     return new ArrowDataset(table, prefs, plot);
@@ -35420,7 +35358,7 @@ class Dataset {
     delete this.transformations[name];
   }
   domain(dimension, max_ix = 1e6) {
-    var _a2;
+    var _a2, _b2;
     if (this.extents[dimension]) {
       return this.extents[dimension];
     }
@@ -35443,7 +35381,7 @@ class Dataset {
       if (dim.type.typeId == 10 && typeof min2 === "string") {
         min2 = Number(new Date(min2));
       }
-      if (dim.type.typeId == 10 && typeof max2 === "string") {
+      if (((_b2 = dim.type) == null ? void 0 : _b2.typeId) == 10 && typeof max2 === "string") {
         max2 = Number(new Date(max2));
       }
       if (typeof max2 === "string") {
@@ -35657,11 +35595,14 @@ class ArrowDataset extends Dataset {
   }
 }
 class QuadtileSet extends Dataset {
-  constructor(base_url, prefs, plot) {
+  constructor(base_url, prefs, plot, options = {}) {
     super(plot);
     this._download_queue = /* @__PURE__ */ new Set();
     this.promise = new Promise(nothing);
-    this.root_tile = new QuadTile(base_url, "0/0/0", null, this, prefs);
+    if (options.tileProxy) {
+      this.tileProxy = options.tileProxy;
+    }
+    this.root_tile = new QuadTile(base_url, "0/0/0", null, this);
     this.promise = this.root_tile.download().then((d) => {
       const schema = this.root_tile.record_batch.schema;
       if (schema.metadata.has("sidecars")) {
@@ -35731,14 +35672,14 @@ class QuadtileSet extends Dataset {
    * @param buffer An Arrow IPC Buffer that deserializes to a table with columns('data' and '_tile')
    */
   add_macrotiled_column(field_name, transformation) {
-    const megatile_tasks = {};
+    const macrotile_tasks = {};
     const records = {};
     async function get_table(tile) {
       const { key, macrotile: macrotile2 } = tile;
-      if (megatile_tasks[macrotile2] !== void 0) {
-        return await megatile_tasks[macrotile2];
+      if (macrotile_tasks[macrotile2] !== void 0) {
+        return await macrotile_tasks[macrotile2];
       } else {
-        megatile_tasks[macrotile2] = transformation(tile.macro_siblings).then(
+        macrotile_tasks[macrotile2] = transformation(tile.macro_siblings).then(
           (buffer) => {
             const tb = tableFromIPC(buffer);
             for (const batch of tb.batches) {
@@ -35755,13 +35696,25 @@ class QuadtileSet extends Dataset {
             return;
           }
         );
-        return megatile_tasks[macrotile2];
+        return macrotile_tasks[macrotile2];
       }
     }
     this.transformations[field_name] = async function(tile) {
       await get_table(tile);
       const array2 = records[tile.key];
-      return array2;
+      if (array2 instanceof Uint8Array) {
+        const v = new Float32Array(array2.length);
+        for (let i = 0; i < tile.record_batch.numRows; i++) {
+          const byte = array2[i];
+          for (let j = 0; j < 8; j++) {
+            const bit = byte >> j & 1;
+            v[i * 8 + j] = bit;
+          }
+        }
+        return v;
+      } else {
+        return array2;
+      }
     };
   }
 }
@@ -35791,6 +35744,7 @@ function check_overlap(tile, bbox) {
   return area(intersection) / area(bbox);
 }
 function add_or_delete_column(batch, field_name, data) {
+  var _a2;
   const tb = {};
   for (const field of batch.schema.fields) {
     if (field.name === field_name) {
@@ -35802,14 +35756,21 @@ function add_or_delete_column(batch, field_name, data) {
     }
     tb[field.name] = batch.getChild(field.name).data[0];
   }
+  if (data === null) {
+    throw new Error(`Name ${field_name} doesn't exist, can't drop.`);
+  }
   if (data === void 0) {
     throw new Error("Must pass data to bind_column");
   }
   if (data !== null) {
-    if (data instanceof Float32Array || data instanceof BigInt64Array) {
-      tb[field_name] = makeVector(data).data[0];
-    } else {
+    if (data instanceof Float32Array) {
+      tb[field_name] = makeVector({ type: new Float32(), data, length: data.length }).data[0];
+    } else if (data instanceof BigInt64Array) {
+      tb[field_name] = makeVector({ type: new Int64$1(), data, length: data.length }).data[0];
+    } else if (((_a2 = data.data) == null ? void 0 : _a2.length) > 0) {
       tb[field_name] = data.data[0];
+    } else {
+      tb[field_name] = data;
     }
   }
   const new_batch = new RecordBatch$2(tb);
@@ -35836,6 +35797,17 @@ function add_or_delete_column(batch, field_name, data) {
       "created by deepscatter",
       new Date().toISOString()
     );
+  }
+  window.state = {
+    new_batch,
+    batch,
+    data,
+    tb
+  };
+  const old_names = batch.schema.fields.map((d) => d.name);
+  window.old_batch = batch;
+  window.new_batch = new_batch;
+  for (const name of old_names) {
   }
   return new_batch;
 }
@@ -36873,32 +36845,267 @@ function isIdSelectParam(params) {
 function isBooleanColumnParam(params) {
   return params.field !== void 0;
 }
+function isFunctionSelectParam(params) {
+  return params.tileFunction !== void 0;
+}
 class DataSelection {
   constructor(plot, params) {
+    this.cursor = 0;
+    this.complete = false;
+    this.selectionSize = 0;
+    this.evaluationSetSize = 0;
+    this.tiles = [];
+    this.events = {};
+    this.match_count = [];
     this.plot = plot;
     this.dataset = plot.dataset;
     this.name = params.name;
+    let markReady = function() {
+    };
+    this.ready = new Promise((resolve, reject) => {
+      markReady = resolve;
+    });
     if (isIdSelectParam(params)) {
-      this.add_identifier_column(params.name, params.ids, params.idField);
+      this.add_identifier_column(params.name, params.ids, params.idField).then(markReady);
     } else if (isBooleanColumnParam(params)) {
-      this.add_boolean_column(params.name, params.field);
+      this.add_boolean_column(params.name, params.field).then(markReady);
+    } else if (isFunctionSelectParam(params)) {
+      this.add_function_column(params.name, params.tileFunction).then(markReady);
     }
   }
-  async add_identifier_column(name, codes, key_field) {
+  /**
+   * 
+   * @param event an internally dispatched event.
+   * @param listener a function to call back. It takes
+   * as an argument the `tile` that was just added.
+   */
+  on(event, listener) {
+    if (!this.events[event]) {
+      this.events[event] = [];
+    }
+    this.events[event].push(listener);
+  }
+  dispatch(event, args) {
+    if (this.events[event]) {
+      this.events[event].forEach((listener) => listener(args));
+    }
+  }
+  /**
+   * Advances the cursor (the currently selected point) by a given number of rows.
+   * steps forward or backward. Wraps from the beginning to the end.
+   * 
+   * @param by the number of rows to move the cursor by
+   * 
+   * @returns the selection, for chaining
+   */
+  moveCursor(by) {
+    this.cursor += by;
+    if (this.cursor >= this.selectionSize) {
+      this.cursor = this.cursor % this.selectionSize;
+    }
+    if (this.cursor < 0) {
+      this.cursor = this.selectionSize + this.cursor;
+    }
+    return this;
+  }
+  async removePoints(name, ixes) {
+    return this.add_or_remove_points(name, ixes, "remove");
+  }
+  // Non-editable behavior: 
+  // if a single point is added, will also adjust the cursor.
+  async addPoints(name, ixes) {
+    return this.add_or_remove_points(name, ixes, "add");
+  }
+  /**
+   * Returns all the data points in the selection, limited to 
+   * data currently on the screen.
+   * 
+   * @param fields A list of fields in the data to export.
+   */
+  async export(fields, format2 = "json") {
+    const columns = Object.fromEntries(fields.map((field) => [field, []]));
+    for (let row of this) {
+      for (let field of fields) {
+        columns[field].push(row[field]);
+      }
+    }
+    return columns;
+  }
+  async add_or_remove_points(name, ixes, which) {
+    let newCursor = 0;
+    let tileOfMatch = void 0;
+    const tileFunction = async (tile) => {
+      newCursor = -1;
+      await this.ready;
+      let value = (await tile.get_column(this.name)).toArray();
+      const ixcol = tile.record_batch.getChild("ix").data[0].values;
+      for (let ix of ixes) {
+        const mid = bisectLeft([...ixcol], ix);
+        const val = tile.record_batch.get(mid);
+        if (val !== null && val.ix === ix) {
+          value = new Float32Array(value);
+          if (which === "add") {
+            value[mid] = 1;
+            if (ixes.length === 1) {
+              tileOfMatch = tile.key;
+              let offset_in_tile = 0;
+              for (let i = 0; i < mid; i++) {
+                if (value[i] > 0) {
+                  offset_in_tile += 1;
+                }
+              }
+              newCursor = offset_in_tile;
+            }
+          } else {
+            value[mid] = 0;
+          }
+        }
+      }
+      return value;
+    };
+    const selection2 = new DataSelection(this.plot, {
+      name,
+      tileFunction
+    });
+    selection2.on("tile loaded", () => {
+      if (newCursor >= 0) {
+        selection2.cursor = newCursor;
+        for (let i = 0; i < selection2.tiles.length; i++) {
+          const tile = selection2.tiles[i];
+          if (tile.key === tileOfMatch) {
+            break;
+          }
+          selection2.cursor += this.match_count[i];
+        }
+      }
+    });
+    await selection2.ready;
+    for (const tile of this.tiles) {
+      await tile.get_column(name);
+    }
+    return selection2;
+  }
+  /**
+   * 
+   * @param name the name for the column to assign in the dataset.
+   * @param tileFunction The transformation to apply
+   */
+  async add_function_column(name, tileFunction) {
+    if (this.dataset.has_column(name)) {
+      throw new Error(`Column ${name} already exists, can't create`);
+    }
+    this.plot.dataset.transformations[name] = this.wrapWithSelectionMetadata(tileFunction);
+    await this.dataset.root_tile.apply_transformation(name);
+  }
+  /**
+   * 
+   * Takes a user-defined supplied transformation and adds some bookkeeping
+   * for the various count variables.
+   * 
+   * @param functionToApply the user-defined transformation
+   */
+  wrapWithSelectionMetadata(functionToApply) {
+    return async (tile) => {
+      const array2 = await functionToApply(tile);
+      const batch = tile.record_batch;
+      let matches = 0;
+      for (let i = 0; i < batch.numRows; i++) {
+        if (array2[i] > 0) {
+          matches++;
+        }
+      }
+      this.match_count.push(matches);
+      this.tiles.push(tile);
+      this.selectionSize += matches;
+      this.evaluationSetSize += batch.numRows;
+      this.dispatch("tile loaded", tile);
+      return array2;
+    };
+  }
+  /**
+   * The total number of points in the dataset.
+   */
+  get totalSetSize() {
+    return this.dataset.highest_known_ix;
+  }
+  /**
+   * 
+   * Returns the nth element in the selection. This is a bit tricky because
+   * the selection is stored as a list of tiles, each of which has a list of
+   * matches. So we have to iterate through the tiles until we find the one
+   * that contains the nth match, then iterate through the matches in that
+   * tile until we find the nth match.
+   * 
+   * @param i the index of the row to get
+   */
+  get(i) {
+    if (i === void 0) {
+      i = this.cursor;
+    }
+    if (i > this.selectionSize) {
+      throw new Error(`Index ${i} out of bounds for selection of size ${this.selectionSize}`);
+    }
+    let currentOffset = 0;
+    let relevantTile = void 0;
+    let current_tile_ix = 0;
+    for (let match_length of this.match_count) {
+      if (i < currentOffset + match_length) {
+        relevantTile = this.tiles[current_tile_ix];
+        break;
+      }
+      current_tile_ix += 1;
+      currentOffset += match_length;
+    }
+    if (relevantTile === void 0) {
+      return null;
+    }
+    const column = relevantTile.record_batch.getChild(this.name).toArray();
+    const offset = i - currentOffset;
+    let ix_in_match = 0;
+    for (let j = 0; j < column.length; j++) {
+      if (column[j] > 0) {
+        if (ix_in_match === offset) {
+          return relevantTile.record_batch.get(j);
+        }
+        ix_in_match++;
+      }
+    }
+    throw new Error(`unable to locate point ${i}`);
+  }
+  // Iterate over the points in raw order.
+  *[Symbol.iterator]() {
+    for (let tile of this.tiles) {
+      const column = tile.record_batch.getChild(this.name).toArray();
+      for (let i = 0; i < column.length; i++) {
+        if (column[i] > 0) {
+          yield tile.record_batch.get(i);
+        }
+      }
+    }
+  }
+  async add_identifier_column(name, codes, key_field, options = {}) {
     if (this.dataset.has_column(name)) {
       throw new Error(`Column ${name} already exists, can't create`);
     }
     if (typeof codes[0] === "string") {
       const matcher2 = stringmatcher(key_field, codes);
-      this.dataset.transformations[name] = matcher2;
+      this.plot.dataset.transformations[name] = this.wrapWithSelectionMetadata(matcher2);
       await this.dataset.root_tile.apply_transformation(name);
-      return this.apply_to_foreground({});
+    } else if (typeof codes[0] === "bigint") {
+      const matcher2 = bigintmatcher(key_field, codes);
+      this.plot.dataset.transformations[name] = this.wrapWithSelectionMetadata(matcher2);
+      await this.dataset.root_tile.apply_transformation(name);
     } else {
-      throw new Error("Not implemented");
+      console.error("Unable to match type", typeof codes[0]);
+    }
+    if (options.plot_after) {
+      return this.apply_to_foreground({});
     }
   }
-  add_boolean_column(name, field) {
+  async add_boolean_column(name, field) {
     throw new Error("Method not implemented.");
+  }
+  combine(other, operation, name) {
   }
   apply_to_foreground(params) {
     const field = this.name;
@@ -36917,6 +37124,18 @@ class DataSelection {
       }
     });
   }
+}
+function bigintmatcher(field, matches) {
+  const matchings = new Set(matches);
+  return async function(tile) {
+    const col = (await tile.get_column(field)).data[0];
+    const values = col.values;
+    const results = new Float32Array(tile.record_batch.numRows);
+    for (let i = 0; i < tile.record_batch.numRows; i++) {
+      results[i] = matchings.has(values[i]) ? 1 : 0;
+    }
+    return results;
+  };
 }
 function stringmatcher(field, matches) {
   const trie = [];
@@ -36956,7 +37175,6 @@ function stringmatcher(field, matches) {
       const end = offsets[o + 1];
       if (existsInTrie(start2, end - start2)) {
         results[o] = 1;
-        console.log("match", { ...tile.record_batch.get(o) });
       }
     }
     return results;
@@ -37007,7 +37225,7 @@ class Scatterplot {
    * @param width The width of the scatterplot (in pixels)
    * @param height The height of the scatterplot (in pixels)
    */
-  constructor(selector2, width, height) {
+  constructor(selector2, width, height, options = {}) {
     this.secondary_renderers = {};
     this.selection_history = [];
     this.plot_queue = Promise.resolve();
@@ -37026,6 +37244,9 @@ class Scatterplot {
     this.click_handler = new ClickFunction(this);
     this.tooltip_handler = new TooltipHTML(this);
     this.label_click_handler = new LabelClick(this);
+    if (options.tileProxy) {
+      this.tileProxy = options.tileProxy;
+    }
     this.prefs = { ...default_API_call };
   }
   /**
@@ -37051,10 +37272,36 @@ class Scatterplot {
     }
     this.bound = true;
   }
+  /**
+   * Creates a new selection from a set of parameters, and immediately applies it to the plot.
+   * @param params A set of parameters defining a selection. 
+  */
+  async select_and_plot(params, duration = this.prefs.duration) {
+    const selection2 = await this.select_data(params);
+    await selection2.ready;
+    await this.plotAPI({
+      duration,
+      encoding: {
+        foreground: {
+          field: selection2.name,
+          op: "eq",
+          a: 1
+        }
+      }
+    });
+  }
+  /**
+   * 
+   * @param params A set of parameters for selecting data based on ids, a boolean column, or a function.
+   * @returns A DataSelection object that can be used to extend the selection.
+   * 
+   * See `select_and_plot` for a method that will select data and plot it.
+   */
   async select_data(params) {
     const selection2 = new DataSelection(this, params);
+    await selection2.ready;
     this.selection_history.push({
-      ref: selection2,
+      selection: selection2,
       name: selection2.name,
       flushed: false
     });

@@ -224,20 +224,30 @@
       },
     });
   }
-  document
-    .getElementById('select-ids')
-    .addEventListener('click', () => {
-      const ids = document.getElementById('input-ids').value.split(" ").filter(d => d)
-      console.log({ ids })
-      plot.select_data({ name: Math.random().toString(36), ids, idField: "_id" })
-    });
+  document.getElementById('select-ids').addEventListener('click', () => {
+    const ids = document
+      .getElementById('input-ids')
+      .value.split(' ')
+      .filter((d) => d);
+    console.log({ ids });
+    const name = Math.random().toString(36);
+    plot.select_and_plot({ name, ids, idField: '_id' });
+  });
 
   document
     .getElementById('select-lots-of-ids')
     .addEventListener('click', () => {
-
-      console.log({ ids })
-      plot.select_data({ name: Math.random().toString(36), ids, idField: "_id" })
+      const ids = [];
+      for (let i = 0; i < 1000; i += 1) {
+        ids.push(Math.floor(Math.random() * 2 ** 16).toString());
+      }
+      console.log({ ids });
+      const name = Math.random().toString(36);
+      plot.select_and_plot({
+        name,
+        ids,
+        idField: '_id',
+      });
     });
   document
     .getElementById('prime')
@@ -262,5 +272,9 @@
     left: 0;
     padding: 20px;
     z-index: 199;
+  }
+
+  .tooltip {
+    transform: translate(-50%, -100%);
   }
 </style>

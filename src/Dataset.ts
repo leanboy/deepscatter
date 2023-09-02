@@ -1,18 +1,19 @@
 // A Dataset manages the production and manipulation of *tiles*.
-
 import { Tile, Rectangle, QuadTile, ArrowTile, p_in_rect } from './tile';
 import { range, min, max, bisectLeft, extent, sum } from 'd3-array';
-import Scatterplot from './deepscatter';
+import type * as DS from './shared';
 import {
   RecordBatch,
   StructRowProxy,
   Table,
-  vectorFromArray,
   Data,
   Schema,
   tableFromIPC,
   Vector,
   makeVector,
+  Float32,
+  Int64,
+  makeData
 } from 'apache-arrow';
 
 type APICall = DS.APICall;
@@ -21,38 +22,38 @@ type Key = string;
 function nothing() {
   /* do nothing */
 }
-
-type ArrowBuildable = Vector | Float32Array;
-type Transformation<T> = (arg0: T) => ArrowBuildable | Promise<ArrowBuildable>;
+type ArrowBuildable = DS.ArrowBuildable;
+type Transformation<T> = DS.Transformation<T>;
 
 /**
- * A Dataset manages the production and manipulation of tiles. Each plot has a 
- * single dataset; the dataset handles all transformations around data through 
+ * A Dataset manages the production and manipulation of tiles. Each plot has a
+ * single dataset; the dataset handles all transformations around data through
  * batchwise operations.
  */
 export abstract class Dataset<T extends Tile> {
   public transformations: Record<string, Transformation<T>> = {};
   abstract root_tile: T;
-  protected plot: Plot;
+  protected plot: DS.Plot;
   abstract ready: Promise<void>;
   abstract get extent(): Rectangle;
   abstract promise: Promise<void>;
   private extents: Record<string, [number, number]> = {};
   public _ix_seed = 0;
   public _schema?: Schema;
+  public tileProxy?: DS.TileProxy;
 
   /**
    * @param plot The plot to which this dataset belongs.
-  **/
+   **/
 
-  constructor(plot: Plot) {
+  constructor(plot: DS.Plot) {
     this.plot = plot;
     // If a linear identifier does not exist in the passed data, we add the ix columns in the order that
     // they are passed.
   }
 
   /**
-   * The highest known point that deepscatter has seen so far. This is used 
+   * The highest known point that deepscatter has seen so far. This is used
    * to adjust opacity size.
    */
   get highest_known_ix(): number {
@@ -63,8 +64,8 @@ export abstract class Dataset<T extends Tile> {
    * Attempts to build an Arrow table from all record batches.
    * If some batches have different transformations applied,
    * this will error
-   * 
-  **/
+   *
+   **/
   get table(): Table {
     return new Table(
       this.map((d) => d)
@@ -76,22 +77,26 @@ export abstract class Dataset<T extends Tile> {
   static from_quadfeather(
     url: string,
     prefs: APICall,
-    plot: Plot
+    plot: DS.Plot
   ): QuadtileSet {
-    return new QuadtileSet(url, prefs, plot);
+    const options = {};
+    if (plot.tileProxy) {
+      options['tileProxy'] = plot.tileProxy;
+    }
+    return new QuadtileSet(url, prefs, plot, options);
   }
   /**
    * Generate an ArrowDataset from a single Arrow table.
-   * 
+   *
    * @param table A single Arrow table
    * @param prefs The API Call to use for renering.
    * @param plot The Scatterplot to use.
-   * @returns 
+   * @returns
    */
   static from_arrow_table(
     table: Table,
     prefs: APICall,
-    plot: Plot
+    plot: DS.Plot
   ): ArrowDataset {
     return new ArrowDataset(table, prefs, plot);
   }
@@ -113,6 +118,7 @@ export abstract class Dataset<T extends Tile> {
       name in this.transformations
     );
   }
+  
   delete_column_if_exists(name: string) {
     // This is a complicated operation to actually free up memory.
     // Clone the record batches, without this data;
@@ -147,7 +153,7 @@ export abstract class Dataset<T extends Tile> {
       if (dim.type.typeId == 10 && typeof min === 'string') {
         min = Number(new Date(min));
       }
-      if (dim.type.typeId == 10 && typeof max === 'string') {
+      if (dim.type?.typeId == 10 && typeof max === 'string') {
         max = Number(new Date(max));
       }
       if (typeof max === 'string') {
@@ -220,7 +226,7 @@ export abstract class Dataset<T extends Tile> {
 
     const stack: T[] = [this.root_tile];
     const after_stack = [];
-    let current;
+    let current : T;
     while ((current = stack.shift())) {
       if (!after) {
         callback(current);
@@ -236,7 +242,7 @@ export abstract class Dataset<T extends Tile> {
       }
     }
     if (after) {
-      while ((current = after_stack.pop())) {
+      while ((current = after_stack.pop() as T)) {
         callback(current);
       }
     }
@@ -277,7 +283,7 @@ export abstract class Dataset<T extends Tile> {
     };
   }
 
-  add_sparse_identifiers(field_name: string, ids: PointUpdate) {
+  add_sparse_identifiers(field_name: string, ids: DS.PointUpdate) {
     this.transformations[field_name] = function (tile) {
       const { key } = tile;
       const length = tile.record_batch.numRows;
@@ -338,7 +344,7 @@ export abstract class Dataset<T extends Tile> {
       return row;
     }
     await tile.apply_transformation(transformation);
-    const ixcol = tile.record_batch.getChild('ix') as Vector;
+    const ixcol = tile.record_batch.getChild('ix');
     const mid = bisectLeft([...ixcol.data[0].values], ix);
     return tile.record_batch.get(mid);
   }
@@ -386,7 +392,7 @@ export class ArrowDataset extends Dataset<ArrowTile> {
   public promise: Promise<void> = Promise.resolve();
   public root_tile: ArrowTile;
 
-  constructor(table: Table, prefs: APICall, plot: Plot) {
+  constructor(table: Table, prefs: APICall, plot: DS.Plot) {
     super(plot);
     this.root_tile = new ArrowTile(table, this, 0, plot);
   }
@@ -409,14 +415,23 @@ export class ArrowDataset extends Dataset<ArrowTile> {
   }
 }
 
+
+
 export class QuadtileSet extends Dataset<QuadTile> {
   protected _download_queue: Set<Key> = new Set();
   public promise: Promise<void> = new Promise(nothing);
-  root_tile: QuadTile;
-
-  constructor(base_url: string, prefs: APICall, plot: Plot) {
+  root_tile: QuadTie;
+  constructor(
+    base_url: string,
+    prefs: APICall,
+    plot: DS.Plot,
+    options: DS.QuadtileOptions = {}
+  ) {
     super(plot);
-    this.root_tile = new QuadTile(base_url, '0/0/0', null, this, prefs);
+    if (options.tileProxy) {
+      this.tileProxy = options.tileProxy;
+    }
+    this.root_tile = new QuadTile(base_url, '0/0/0', null, this);
     this.promise = this.root_tile.download().then((d) => {
       const schema = this.root_tile.record_batch.schema;
       if (schema.metadata.has('sidecars')) {
@@ -516,15 +531,15 @@ export class QuadtileSet extends Dataset<QuadTile> {
     field_name: string,
     transformation: (ids: string[]) => Promise<Uint8Array>
   ): void {
-    const megatile_tasks: Record<string, Promise<void>> = {};
-    const records: Record<string, Float32Array> = {};
+    const macrotile_tasks: Record<string, Promise<void>> = {};
+    const records: Record<string, Float32Array | Uint8Array> = {};
 
     async function get_table(tile: QuadTile) {
       const { key, macrotile } = tile;
-      if (megatile_tasks[macrotile] !== undefined) {
-        return await megatile_tasks[macrotile];
+      if (macrotile_tasks[macrotile] !== undefined) {
+        return await macrotile_tasks[macrotile];
       } else {
-        megatile_tasks[macrotile] = transformation(tile.macro_siblings).then(
+        macrotile_tasks[macrotile] = transformation(tile.macro_siblings).then(
           (buffer) => {
             const tb = tableFromIPC(buffer);
             for (const batch of tb.batches) {
@@ -535,20 +550,33 @@ export class QuadtileSet extends Dataset<QuadTile> {
                 records[tilename] = values.values.slice(
                   offsets[i],
                   offsets[i + 1]
-                ) as Float32Array;
+                ) as (Float32Array | Uint8Array);
               }
             }
             return;
           }
         );
-        return megatile_tasks[macrotile];
+        return macrotile_tasks[macrotile];
       }
     }
 
     this.transformations[field_name] = async function (tile) {
       await get_table(tile);
       const array = records[tile.key];
-      return array;
+      if (array instanceof Uint8Array) {
+        const v = new Float32Array(array.length);
+        for (let i = 0; i < tile.record_batch.numRows; i++) {
+          // pop out the bitmask one at a time.
+          const byte = array[i];
+          for (let j = 0; j < 8; j++) {
+            const bit = (byte >> j) & 1;
+            v[i * 8 + j] = bit;
+          }
+        }
+        return v;
+      } else {
+        return array;
+      }
     };
   }
 }
@@ -611,17 +639,24 @@ export function add_or_delete_column(
         throw new Error(`Name ${field.name} already exists, can't add.`);
       }
     }
-    tb[field.name] = batch.getChild(field.name)!.data[0] as Data;
+    tb[field.name] = batch.getChild(field.name)!.data[0];
   }
-
+  if (data === null) {
+    // Then it's dropped.
+    throw new Error(`Name ${field_name} doesn't exist, can't drop.`);
+  }
   if (data === undefined) {
     throw new Error('Must pass data to bind_column');
   }
   if (data !== null) {
-    if (data instanceof Float32Array || data instanceof BigInt64Array) {
-      tb[field_name] = makeVector(data).data[0];
+    if (data instanceof Float32Array) {
+      tb[field_name] = makeVector({ type: new Float32(), data, length: data.length }).data[0];
+    } else if (data instanceof BigInt64Array) {
+      tb[field_name] = makeVector({ type: new Int64(), data, length: data.length }).data[0];
+    } else if (data.data?.length > 0) {
+      tb[field_name] = data.data[0];
     } else {
-      tb[field_name] = data.data[0] as Data;
+      tb[field_name] = data as Data;
     }
   }
 
@@ -650,6 +685,18 @@ export function add_or_delete_column(
       'created by deepscatter',
       new Date().toISOString()
     );
+  }
+  window.state = {
+    new_batch,
+    batch,
+    data,
+    tb
+  }
+  const old_names = batch.schema.fields.map(d => d.name)
+  window.old_batch = batch;
+  window.new_batch = new_batch;
+  for (const name of old_names) {
+    // console.log(name, new_batch.getChild(name))
   }
   return new_batch;
 }
@@ -713,6 +760,5 @@ function supplement_identifiers(
       }
     }
   }
-
   return updatedFloatArray;
 }
